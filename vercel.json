@@ -1,6 +1,0 @@
-{
-  "buildCommand": "cd frontend && pnpm install && pnpm run build",
-  "outputDirectory": "frontend/dist",
-  "installCommand": "corepack enable && corepack prepare pnpm@latest --activate",
-  "framework": "vite"
-}
