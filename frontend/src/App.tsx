@@ -47,7 +47,10 @@ function App() {
     return [];
   });
 
-  const endpoint = localStorage.getItem('crypto_bot_rpc') || config.rpcEndpoint;
+  const savedRpc = localStorage.getItem('crypto_bot_rpc');
+  const endpoint = savedRpc && !savedRpc.includes('api.mainnet-beta.solana.com')
+    ? savedRpc
+    : config.rpcEndpoint;
   const wallets = useMemo(() => [
     new PhantomWalletAdapter(),
     new SolflareWalletAdapter(),

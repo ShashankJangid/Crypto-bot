@@ -6,7 +6,10 @@ interface SettingsPageProps {
 }
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({ trades }) => {
-  const [rpcUrl, setRpcUrl] = useState(() => localStorage.getItem('crypto_bot_rpc') || 'https://api.mainnet-beta.solana.com');
+  const [rpcUrl, setRpcUrl] = useState(() => {
+    const saved = localStorage.getItem('crypto_bot_rpc');
+    return saved && !saved.includes('api.mainnet-beta.solana.com') ? saved : 'https://solana-rpc.publicnode.com';
+  });
   const [cluster, setCluster] = useState<'mainnet-beta' | 'devnet'>('mainnet-beta');
   const [autoSign, setAutoSign] = useState(false);
   const [maxSlippage, setMaxSlippage] = useState('0.5');
