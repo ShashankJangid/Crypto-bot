@@ -3,6 +3,7 @@ import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
 import { Dashboard } from './components/Dashboard';
+import { AiTraderPage } from './components/AiTraderPage';
 import { ArbitragePage } from './components/ArbitragePage';
 import { SwingTradePage } from './components/SwingTradePage';
 import { SettingsPage } from './components/SettingsPage';
@@ -12,7 +13,7 @@ import { BotStatus, TradeRecord, BotSettings } from './types';
 import { config } from './config';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('ai_trader');
   const { prices, loading: pricesLoading } = usePrices();
 
   const [botSettings, setBotSettings] = useState<BotSettings>(() => {
@@ -51,6 +52,7 @@ function App() {
   const endpoint = savedRpc && !savedRpc.includes('api.mainnet-beta.solana.com')
     ? savedRpc
     : config.rpcEndpoint;
+
   const wallets = useMemo(() => [
     new PhantomWalletAdapter(),
     new SolflareWalletAdapter(),
@@ -69,7 +71,6 @@ function App() {
       const sol = prices['SOL/USD']?.price || 75.30;
       const isArb = botSettings.arbEnabled && (!botSettings.swingEnabled || Math.random() > 0.5);
       
-      // Compute realistic profit based on settings
       const profitUsd = isArb
         ? +(Math.random() * 4.5 + 0.8).toFixed(2)
         : +(Math.random() * 8.2 + 1.5).toFixed(2);
@@ -130,6 +131,8 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'ai_trader':
+        return <AiTraderPage prices={prices} onExecuteTrade={handleExecuteTrade} />;
       case 'dashboard':
         return (
           <Dashboard
@@ -139,6 +142,7 @@ function App() {
             pricesLoading={pricesLoading}
             onStartStop={handleStartStop}
             onUpdateSettings={handleUpdateSettings}
+            onNavigateToAi={() => setActiveTab('ai_trader')}
           />
         );
       case 'arbitrage':
@@ -168,11 +172,12 @@ function App() {
             <div className="w-64 bg-crypto-card border-r border-gray-700 p-4 flex flex-col justify-between">
               <div>
                 <div className="text-2xl font-bold mb-8 text-crypto-neonGreen flex items-center">
-                  <span className="mr-2">⚡</span> ArbBot Pro
+                  <span className="mr-2">⚡</span> ArbBot AI
                 </div>
                 
                 <nav className="space-y-2">
                   {[
+                    { id: 'ai_trader', label: '🤖 AI Auto-Pilot' },
                     { id: 'dashboard', label: '📊 Dashboard' },
                     { id: 'arbitrage', label: '⚡ Arbitrage' },
                     { id: 'swing', label: '📈 Swing Trade' },
@@ -182,7 +187,7 @@ function App() {
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={`w-full text-left px-4 py-3 rounded capitalize transition-colors ${
+                      className={`w-full text-left px-4 py-3 rounded capitalize transition-colors flex items-center ${
                         activeTab === tab.id
                           ? 'bg-gray-700 text-white font-bold border-l-4 border-crypto-neonGreen'
                           : 'text-gray-400 hover:bg-gray-800'
@@ -196,10 +201,10 @@ function App() {
 
               <div className="pt-4 border-t border-gray-700 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Price Feed:</span>
+                  <span className="text-gray-400">AI Intelligence:</span>
                   <span className="flex items-center text-crypto-neonGreen font-bold">
                     <span className="w-2 h-2 rounded-full bg-crypto-neonGreen animate-pulse mr-1"></span>
-                    {!pricesLoading ? 'Pyth & CG Online' : 'Connecting...'}
+                    Neural v3.4
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
