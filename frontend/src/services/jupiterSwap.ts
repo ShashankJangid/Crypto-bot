@@ -1,7 +1,8 @@
 import { Connection, VersionedTransaction } from '@solana/web3.js';
 
-const JUPITER_QUOTE_API = 'https://quote-api.jup.ag/v6/quote';
-const JUPITER_SWAP_API = 'https://quote-api.jup.ag/v6/swap';
+// Official active Jupiter v1 routing & swap endpoints
+const JUPITER_QUOTE_API = 'https://api.jup.ag/swap/v1/quote';
+const JUPITER_SWAP_API = 'https://api.jup.ag/swap/v1/swap';
 
 // Common Token Mints on Solana Mainnet
 export const TOKENS = {
@@ -32,12 +33,12 @@ export interface SwapResult {
  */
 export async function getJupiterQuote(params: QuoteParams) {
   const { inputMint, outputMint, amountLamports, slippageBps = 50 } = params;
-  const url = `${JUPITER_QUOTE_API}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountLamports}&slippageBps=${slippageBps}`;
+  const url = `${JUPITER_QUOTE_API}?inputMint=${inputMint}&outputMint=${outputMint}&amount=${Math.round(amountLamports)}&slippageBps=${slippageBps}`;
   
   const response = await fetch(url);
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || `Jupiter quote error: ${response.statusText}`);
+    throw new Error(errData.error || errData.message || `Jupiter quote error (status ${response.status})`);
   }
   
   return await response.json();
@@ -70,10 +71,14 @@ export async function executeJupiterSwap(
 
     if (!swapResponse.ok) {
       const err = await swapResponse.json().catch(() => ({}));
-      throw new Error(err.error || `Jupiter swap preparation failed: ${swapResponse.statusText}`);
+      throw new Error(err.error || err.message || `Jupiter swap preparation failed: ${swapResponse.statusText}`);
     }
 
     const { swapTransaction } = await swapResponse.json();
+
+    if (!swapTransaction) {
+      throw new Error('Jupiter did not return a valid transaction payload');
+    }
 
     // 2. Deserialize VersionedTransaction
     const swapTransactionBuf = Buffer.from(swapTransaction, 'base64');
@@ -99,7 +104,7 @@ export async function executeJupiterSwap(
       explorerUrl: `https://solscan.io/tx/${txid}`,
     };
   } catch (error: any) {
-    console.error('Jupiter swap execution failed:', error);
+    console.error('Jupiter swap execution error:', error);
     return {
       success: false,
       error: error.message || 'Transaction rejected or failed on-chain',

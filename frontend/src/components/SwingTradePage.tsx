@@ -12,11 +12,11 @@ interface SwingTradePageProps {
 export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecuteTrade }) => {
   const { publicKey, sendTransaction, connected } = useWallet();
   const { connection } = useConnection();
-  const [activePair, setActivePair] = useState('SOL/USDC');
+  const [activePair, setActivePair] = useState<'SOL_USDC' | 'SOL_JUP'>('SOL_USDC');
   const [dipThreshold, setDipThreshold] = useState(2.5);
   const [takeProfit, setTakeProfit] = useState(5.0);
   const [stopLoss, setStopLoss] = useState(2.0);
-  const [tradeAmount, setTradeAmount] = useState(0.02);
+  const [tradeAmount, setTradeAmount] = useState(0.01);
   const [isExecuting, setIsExecuting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [mode, setMode] = useState<'real' | 'simulated'>('simulated');
@@ -24,23 +24,32 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
   const currentPrice = prices['SOL/USD']?.price || 75.30;
   const change24h = prices['SOL/USD']?.change24h || 0;
 
-  const handleExecuteTrade = async (action: 'BUY' | 'SELL') => {
+  const handleExecuteSwap = async (direction: 'SOL_TO_TOKEN' | 'TOKEN_TO_SOL') => {
     setIsExecuting(true);
     const now = new Date().toLocaleTimeString();
+    const targetTokenMint = activePair === 'SOL_USDC' ? TOKENS.USDC : TOKENS.JUP;
+    const targetTokenSymbol = activePair === 'SOL_USDC' ? 'USDC' : 'JUP';
 
     if (mode === 'real') {
       if (!connected || !publicKey) {
-        setLogs(prev => [`[${now}] ⚠️ Wallet not connected. Please connect wallet in header.`, ...prev]);
+        setLogs(prev => [`[${now}] ⚠️ Wallet not connected. Please connect Phantom / Solflare first.`, ...prev]);
         setIsExecuting(false);
         return;
       }
 
       try {
-        setLogs(prev => [`[${now}] 📡 Preparing Jupiter on-chain ${action} transaction for ${tradeAmount} SOL...`, ...prev]);
+        const inputMint = direction === 'SOL_TO_TOKEN' ? TOKENS.SOL : targetTokenMint;
+        const outputMint = direction === 'SOL_TO_TOKEN' ? targetTokenMint : TOKENS.SOL;
+        
+        // Amount calculation
+        const amountLamports = direction === 'SOL_TO_TOKEN'
+          ? Math.round(tradeAmount * LAMPORTS_PER_SOL)
+          : Math.round(tradeAmount * 1_000_000 * currentPrice);
 
-        const inputMint = action === 'BUY' ? TOKENS.USDC : TOKENS.SOL;
-        const outputMint = action === 'BUY' ? TOKENS.SOL : TOKENS.USDC;
-        const amountLamports = Math.round(tradeAmount * (action === 'BUY' ? 1_000_000 * currentPrice : LAMPORTS_PER_SOL));
+        setLogs(prev => [
+          `[${now}] 📡 Querying Jupiter best route (${direction === 'SOL_TO_TOKEN' ? `SOL ➔ ${targetTokenSymbol}` : `${targetTokenSymbol} ➔ SOL`})...`,
+          ...prev
+        ]);
 
         const quote = await getJupiterQuote({
           inputMint,
@@ -49,7 +58,15 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
           slippageBps: 50
         });
 
-        setLogs(prev => [`[${now}] 🔐 Prompting wallet signature for real ${action} order...`, ...prev]);
+        const outAmountFormatted = direction === 'SOL_TO_TOKEN'
+          ? (quote.outAmount / 1_000_000).toFixed(4) + ` ${targetTokenSymbol}`
+          : (quote.outAmount / LAMPORTS_PER_SOL).toFixed(4) + ' SOL';
+
+        setLogs(prev => [
+          `[${new Date().toLocaleTimeString()}] 💡 Route Found: Expected Output ~ ${outAmountFormatted}`,
+          `[${new Date().toLocaleTimeString()}] 🔐 Please confirm the transaction in your wallet popup...`,
+          ...prev
+        ]);
 
         const result = await executeJupiterSwap(
           quote,
@@ -61,7 +78,7 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
         if (result.success && result.txid) {
           const txSignature = result.txid;
           setLogs(prev => [
-            `[${new Date().toLocaleTimeString()}] ✅ REAL ${action} CONFIRMED! Tx: ${txSignature.substring(0, 16)}...`,
+            `[${new Date().toLocaleTimeString()}] ✅ REAL ON-CHAIN SWAP CONFIRMED! Tx: ${txSignature.substring(0, 16)}...`,
             `🔗 Solscan: ${result.explorerUrl || 'https://solscan.io/tx/' + txSignature}`,
             ...prev
           ]);
@@ -70,8 +87,8 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
             onExecuteTrade({
               id: txSignature.substring(0, 10),
               timestamp: Date.now(),
-              pair: activePair,
-              side: action === 'BUY' ? 'Buy' : 'Sell',
+              pair: activePair === 'SOL_USDC' ? 'SOL/USDC' : 'SOL/JUP',
+              side: direction === 'SOL_TO_TOKEN' ? 'Sell' : 'Buy',
               amount: tradeAmount,
               price: currentPrice,
               profit: +(tradeAmount * currentPrice * (takeProfit / 100)).toFixed(2),
@@ -80,24 +97,26 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
             });
           }
         } else {
-          setLogs(prev => [`[${new Date().toLocaleTimeString()}] ❌ Failed: ${result.error}`, ...prev]);
+          setLogs(prev => [`[${new Date().toLocaleTimeString()}] ❌ Swap Failed: ${result.error}`, ...prev]);
         }
       } catch (err: any) {
-        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ❌ Swap error: ${err.message}`, ...prev]);
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ❌ Error: ${err.message}`, ...prev]);
       } finally {
         setIsExecuting(false);
       }
       return;
     }
 
-    // Simulation
-    setLogs(prev => [`[${now}] 🧪 [Simulated ${action}]: ${tradeAmount} SOL @ $${currentPrice.toFixed(2)}`, ...prev]);
+    // Sandbox Simulation Mode
+    const dirLabel = direction === 'SOL_TO_TOKEN' ? `Sell SOL for ${targetTokenSymbol}` : `Buy SOL with ${targetTokenSymbol}`;
+    setLogs(prev => [`[${now}] 🧪 [Simulation]: ${dirLabel} (${tradeAmount} SOL @ $${currentPrice.toFixed(2)})`, ...prev]);
+    
     setTimeout(() => {
-      const exitPrice = action === 'BUY' ? currentPrice * (1 + takeProfit / 100) : currentPrice * (1 - dipThreshold / 100);
+      const exitPrice = currentPrice * (1 + takeProfit / 100);
       const profitUsd = +(tradeAmount * currentPrice * (takeProfit / 100)).toFixed(2);
       
       setLogs(prev => [
-        `[${new Date().toLocaleTimeString()}] 🎯 [Simulated TP Hit]: Closed position @ $${exitPrice.toFixed(2)} (+${takeProfit}% | +$${profitUsd})`,
+        `[${new Date().toLocaleTimeString()}] 🎯 [Simulated TP Hit]: Position executed @ $${exitPrice.toFixed(2)} (+${takeProfit}% | +$${profitUsd})`,
         ...prev
       ]);
       setIsExecuting(false);
@@ -106,8 +125,8 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
         onExecuteTrade({
           id: 'sim-' + Math.random().toString(36).substring(7),
           timestamp: Date.now(),
-          pair: activePair,
-          side: action === 'BUY' ? 'Buy' : 'Sell',
+          pair: activePair === 'SOL_USDC' ? 'SOL/USDC' : 'SOL/JUP',
+          side: direction === 'SOL_TO_TOKEN' ? 'Sell' : 'Buy',
           amount: tradeAmount,
           price: exitPrice,
           profit: profitUsd,
@@ -115,7 +134,7 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
           engine: 'Swing'
         });
       }
-    }, 1500);
+    }, 1200);
   };
 
   return (
@@ -157,11 +176,11 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
             <label className="block text-sm text-gray-400 mb-1">Target Pair</label>
             <select
               value={activePair}
-              onChange={(e) => setActivePair(e.target.value)}
+              onChange={(e) => setActivePair(e.target.value as any)}
               className="w-full bg-gray-800 border border-gray-600 rounded p-2 text-white font-mono"
             >
-              <option value="SOL/USDC">SOL/USDC</option>
-              <option value="JUP/SOL">JUP/SOL</option>
+              <option value="SOL_USDC">SOL / USDC</option>
+              <option value="SOL_JUP">SOL / JUP</option>
             </select>
           </div>
 
@@ -204,38 +223,39 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
               type="number"
               value={tradeAmount}
               onChange={(e) => setTradeAmount(parseFloat(e.target.value) || 0)}
-              step="0.01"
-              min="0.005"
+              step="0.005"
+              min="0.001"
               className="w-full bg-gray-800 border border-gray-600 rounded p-2 text-white font-mono"
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2 pt-2">
+          <div className="space-y-2 pt-2">
             <button
               disabled={isExecuting}
-              onClick={() => handleExecuteTrade('BUY')}
-              className={`py-2.5 rounded font-bold transition-colors ${
+              onClick={() => handleExecuteSwap('SOL_TO_TOKEN')}
+              className={`w-full py-2.5 rounded font-bold transition-colors ${
                 isExecuting
                   ? 'bg-yellow-500 text-black animate-pulse'
                   : mode === 'real'
-                  ? 'bg-green-500 hover:bg-green-400 text-black'
+                  ? 'bg-crypto-neonGreen hover:bg-green-400 text-black shadow-lg shadow-green-950/40'
                   : 'bg-blue-600 hover:bg-blue-500 text-white'
               }`}
             >
-              {isExecuting ? '...' : mode === 'real' ? 'REAL BUY' : 'SIM BUY'}
+              {isExecuting ? 'PROCESSING...' : mode === 'real' ? `⚡ SWAP ${tradeAmount} SOL ➔ USDC` : `🧪 SIM SWAP SOL ➔ USDC`}
             </button>
+
             <button
               disabled={isExecuting}
-              onClick={() => handleExecuteTrade('SELL')}
-              className={`py-2.5 rounded font-bold transition-colors ${
+              onClick={() => handleExecuteSwap('TOKEN_TO_SOL')}
+              className={`w-full py-2 rounded text-xs font-bold transition-colors ${
                 isExecuting
-                  ? 'bg-yellow-500 text-black animate-pulse'
+                  ? 'bg-gray-800 text-gray-500'
                   : mode === 'real'
-                  ? 'bg-purple-500 hover:bg-purple-400 text-white'
-                  : 'bg-gray-700 hover:bg-gray-600 text-white'
+                  ? 'bg-purple-600 hover:bg-purple-500 text-white'
+                  : 'bg-gray-800 hover:bg-gray-700 text-gray-300'
               }`}
             >
-              {isExecuting ? '...' : mode === 'real' ? 'REAL SELL' : 'SIM SELL'}
+              {mode === 'real' ? `⚡ RE-BUY (USDC ➔ SOL)` : `🧪 SIM RE-BUY (USDC ➔ SOL)`}
             </button>
           </div>
         </div>
@@ -246,7 +266,7 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
             <div className="flex justify-between items-center mb-4">
               <div>
                 <span className="text-gray-400 text-sm">Asset</span>
-                <div className="text-2xl font-bold font-mono">{activePair}</div>
+                <div className="text-2xl font-bold font-mono">{activePair.replace('_', ' / ')}</div>
               </div>
               <div className="text-right">
                 <span className="text-gray-400 text-sm">Live Price</span>
@@ -259,15 +279,15 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
 
             <div className="grid grid-cols-3 gap-4 pt-4 border-t border-gray-700 text-center font-mono">
               <div className="bg-gray-800/60 p-3 rounded">
-                <div className="text-gray-400 text-xs">BUY TRIGGER</div>
+                <div className="text-gray-400 text-xs">BUY DIP TRIGGER</div>
                 <div className="text-base font-bold text-blue-400">${(currentPrice * (1 - dipThreshold / 100)).toFixed(2)}</div>
               </div>
               <div className="bg-gray-800/60 p-3 rounded">
-                <div className="text-gray-400 text-xs">TAKE PROFIT</div>
+                <div className="text-gray-400 text-xs">TAKE PROFIT TARGET</div>
                 <div className="text-base font-bold text-green-400">${(currentPrice * (1 + takeProfit / 100)).toFixed(2)}</div>
               </div>
               <div className="bg-gray-800/60 p-3 rounded">
-                <div className="text-gray-400 text-xs">STOP LOSS</div>
+                <div className="text-gray-400 text-xs">STOP LOSS LIMIT</div>
                 <div className="text-base font-bold text-red-400">${(currentPrice * (1 - stopLoss / 100)).toFixed(2)}</div>
               </div>
             </div>
@@ -278,7 +298,7 @@ export const SwingTradePage: React.FC<SwingTradePageProps> = ({ prices, onExecut
             <h3 className="text-lg font-bold border-b border-gray-600 pb-2 mb-3">Engine Execution Log</h3>
             <div className="font-mono text-xs space-y-2 h-44 overflow-y-auto bg-gray-900/80 p-3 rounded border border-gray-800">
               {logs.length === 0 ? (
-                <div className="text-gray-500 text-center py-10">Standby. Switch to Real Mode to trade live with your Phantom or Solflare wallet.</div>
+                <div className="text-gray-500 text-center py-10">Standby. Switch to Real Mode to trade live with your connected wallet.</div>
               ) : (
                 logs.map((log, idx) => (
                   <div key={idx} className="text-gray-300 break-all">{log}</div>
