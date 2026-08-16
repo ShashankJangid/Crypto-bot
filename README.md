@@ -24,16 +24,9 @@ crypto-bot/
 
 ## Quick Start
 
-```bash
-# Install dependencies
-npm install
-
-# Start dev servers (frontend + backend)
-npm run dev
-```
-
-- **Frontend**: http://localhost:5173
-- **Backend API**: http://localhost:3001
+- **Live Production App**: [https://solanabot.vercel.app](https://solanabot.vercel.app)
+- **Local Frontend**: http://localhost:5173
+- **Local Backend**: http://localhost:3001
 - **WebSocket**: ws://localhost:3001/ws
 
 ## Environment Variables
