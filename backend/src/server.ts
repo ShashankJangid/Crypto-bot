@@ -9,11 +9,12 @@ import { SwingTradeEngine } from './services/swingTradeEngine.js';
 import { TradeExecutor } from './services/tradeExecutor.js';
 import { RiskManager } from './services/riskManager.js';
 import { GoalTracker } from './services/goalTracker.js';
+import { AutonomousExecutor } from './services/autonomousExecutor.js';
 import { BotStatus, WsIncomingMessage, WsOutgoingMessage } from './types/index.js';
 
 const server = Fastify();
 
-server.register(cors);
+server.register(cors, { origin: true });
 server.register(websocket);
 
 // Services
@@ -23,6 +24,7 @@ const swingEngine = new SwingTradeEngine();
 const tradeExecutor = new TradeExecutor();
 const riskManager = new RiskManager();
 const goalTracker = new GoalTracker(config.goalUsd);
+const autonomousExecutor = new AutonomousExecutor('https://solana-rpc.publicnode.com');
 
 let botStatus: BotStatus = {
   isActive: false,
@@ -35,7 +37,7 @@ let botStatus: BotStatus = {
 let startTime: number | null = null;
 
 // REST API
-server.get('/api/health', async () => ({ status: 'ok' }));
+server.get('/api/health', async () => ({ status: 'ok', time: new Date() }));
 
 server.get('/api/prices', async () => {
   return { prices: priceAggregator.getLatestPrices() };
@@ -58,45 +60,54 @@ server.get('/api/status', async () => {
   return botStatus;
 });
 
+// 24/7 Autonomous Bot Endpoints
+server.get('/api/bot/autonomous/status', async () => {
+  const balance = await autonomousExecutor.getBalance();
+  const status = autonomousExecutor.getStatus();
+  return {
+    ...status,
+    balanceSol: balance.sol,
+    balanceLamports: balance.lamports
+  };
+});
+
+server.post('/api/bot/autonomous/start', async (request: any) => {
+  const tradeSize = request.body?.tradeSizeSol || 0.01;
+  autonomousExecutor.start24x7(tradeSize);
+  return { success: true, message: '24/7 Background Trading Bot Active' };
+});
+
+server.post('/api/bot/autonomous/stop', async () => {
+  autonomousExecutor.stop24x7();
+  return { success: true, message: '24/7 Background Trading Bot Paused' };
+});
+
+server.post('/api/bot/autonomous/withdraw', async (request: any) => {
+  const { destinationAddress, amountSol } = request.body || {};
+  if (!destinationAddress) return { error: 'Destination address required' };
+  const res = await autonomousExecutor.withdrawToWallet(destinationAddress, amountSol);
+  return res;
+});
+
+// Legacy start/stop
 server.post('/api/bot/start', async (request: any) => {
   if (botStatus.isActive) return { error: 'Bot already running' };
-  
-  if (request.body) {
-    Object.assign(config, request.body);
-  }
+  if (request.body) Object.assign(config, request.body);
 
-  priceAggregator.start();
   arbEngine.start();
   swingEngine.start();
-  
   botStatus.isActive = true;
   startTime = Date.now();
-  logger.info('Server', 'Bot started');
-  
   return { success: true, status: botStatus };
 });
 
 server.post('/api/bot/stop', async () => {
   if (!botStatus.isActive) return { error: 'Bot not running' };
-  
-  priceAggregator.stop();
   arbEngine.stop();
   swingEngine.stop();
-  
   botStatus.isActive = false;
   startTime = null;
-  logger.info('Server', 'Bot stopped');
-  
   return { success: true, status: botStatus };
-});
-
-server.post('/api/settings', async (request: any) => {
-  if (request.body) {
-    Object.assign(config, request.body);
-    logger.info('Server', 'Settings updated');
-    return { success: true, config };
-  }
-  return { error: 'No settings provided' };
 });
 
 // WebSocket
@@ -120,7 +131,6 @@ server.register(async function (fastify) {
       try {
         const msg = JSON.parse(message.toString()) as WsIncomingMessage;
         logger.info('WS', `Received message: ${msg.type}`);
-        // Handle incoming commands
       } catch (e) {
         logger.error('WS', 'Failed to parse message');
       }
@@ -131,7 +141,6 @@ server.register(async function (fastify) {
 // Event wiring
 priceAggregator.on('priceUpdate', (prices) => {
   broadcast({ type: 'price_update', data: prices });
-  
   for (const p of prices) {
     arbEngine.processPrice(p);
     swingEngine.processPrice(p);
@@ -145,7 +154,6 @@ arbEngine.on('arbOpportunity', (opp) => {
 goalTracker.on('goalReached', (progress) => {
   broadcast({ type: 'goal_progress', data: progress });
   logger.info('Server', 'Goal Reached!');
-  priceAggregator.stop();
   arbEngine.stop();
   swingEngine.stop();
   botStatus.isActive = false;
@@ -164,7 +172,7 @@ const startServer = async () => {
     await server.listen({ port: config.port, host: '0.0.0.0' });
     logger.info('Server', `Listening on port ${config.port}`);
 
-    // Always stream real prices so the UI shows live data
+    // Always stream real prices
     priceAggregator.start();
     logger.info('Server', 'Price aggregator started (always-on)');
   } catch (err) {

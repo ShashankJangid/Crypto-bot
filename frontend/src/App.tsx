@@ -3,6 +3,7 @@ import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
 import { Dashboard } from './components/Dashboard';
+import { ServerBotHub } from './components/ServerBotHub';
 import { AiTraderPage } from './components/AiTraderPage';
 import { MicroCompoundingPage } from './components/MicroCompoundingPage';
 import { ArbitragePage } from './components/ArbitragePage';
@@ -14,7 +15,7 @@ import { BotStatus, TradeRecord, BotSettings } from './types';
 import { config } from './config';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('micro_compound');
+  const [activeTab, setActiveTab] = useState('24_7_cloud');
   const { prices, loading: pricesLoading } = usePrices();
 
   const [botSettings, setBotSettings] = useState<BotSettings>(() => {
@@ -132,6 +133,8 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case '24_7_cloud':
+        return <ServerBotHub solPrice={prices['SOL/USD']?.price} />;
       case 'micro_compound':
         return <MicroCompoundingPage prices={prices} onExecuteTrade={handleExecuteTrade} />;
       case 'ai_trader':
@@ -180,6 +183,7 @@ function App() {
                 
                 <nav className="space-y-1.5">
                   {[
+                    { id: '24_7_cloud', label: '🌐 24/7 Cloud Bot' },
                     { id: 'micro_compound', label: '🚀 Micro ➔ $1M' },
                     { id: 'ai_trader', label: '🤖 AI Auto-Pilot' },
                     { id: 'dashboard', label: '📊 Dashboard' },
@@ -205,10 +209,10 @@ function App() {
 
               <div className="pt-4 border-t border-gray-700 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Compounding:</span>
+                  <span className="text-gray-400">24/7 Engine:</span>
                   <span className="flex items-center text-crypto-neonGreen font-bold">
                     <span className="w-2 h-2 rounded-full bg-crypto-neonGreen animate-pulse mr-1"></span>
-                    Geometric v2
+                    Autonomous
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
