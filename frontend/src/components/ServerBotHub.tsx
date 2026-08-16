@@ -37,6 +37,8 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
   const [is24x7Active, setIs24x7Active] = useState<boolean>(() => localStorage.getItem('crypto_bot_247_active') === 'true');
   const [autoReinvest, setAutoReinvest] = useState(true);
   const [tradeSize, setTradeSize] = useState(0.005);
+  const [cycleStep, setCycleStep] = useState<'BUY_USDC' | 'REBUY_SOL'>(() => (localStorage.getItem('crypto_bot_cycle_step') as any) || 'BUY_USDC');
+
   const [copiedAddress, setCopiedAddress] = useState(false);
   const [copiedBase58, setCopiedBase58] = useState(false);
   const [copiedJson, setCopiedJson] = useState(false);
@@ -46,9 +48,9 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string; link?: string } | null>(null);
 
   const [logs, setLogs] = useState<string[]>([
-    `[${new Date().toLocaleTimeString()}] 🌐 24/7 Autonomous Bot Initialized.`,
+    `[${new Date().toLocaleTimeString()}] 🌐 24/7 Autonomous SOL Compounding Engine initialized.`,
     `[${new Date().toLocaleTimeString()}] 🔑 Bot Address: ${botAddress}`,
-    `[${new Date().toLocaleTimeString()}] 🔄 Two-Way Reinvestment Engine (SOL ⇄ USDC) Active.`
+    `[${new Date().toLocaleTimeString()}] 🎯 Primary Goal: Continuously Increase Raw SOL Balance.`
   ]);
 
   // Query REAL on-chain SOL & USDC balance from Solana RPC
@@ -75,7 +77,7 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
         }
       }
 
-      // 2. Fetch SPL Token (USDC) Accounts
+      // 2. Fetch USDC SPL Token Accounts by Mint
       const tokenRes = await fetch(RPC_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -85,7 +87,7 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
           method: 'getTokenAccountsByOwner',
           params: [
             botAddress,
-            { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+            { mint: TOKENS.USDC },
             { encoding: 'jsonParsed' }
           ],
         }),
@@ -97,7 +99,7 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
         if (tData.result && tData.result.value) {
           for (const item of tData.result.value) {
             const parsed = item.account?.data?.parsed?.info;
-            if (parsed && parsed.mint === TOKENS.USDC) {
+            if (parsed) {
               totalUsdc += parseFloat(parsed.tokenAmount?.uiAmountString || '0');
             }
           }
@@ -111,118 +113,141 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
     }
   }, [botAddress]);
 
-  // Poll real balance every 6 seconds
+  // Poll real balance every 5 seconds
   useEffect(() => {
     fetchRealBalance();
-    const interval = setInterval(fetchRealBalance, 6000);
+    const interval = setInterval(fetchRealBalance, 5000);
     return () => clearInterval(interval);
   }, [fetchRealBalance]);
 
-  // Save 24/7 toggle state
+  // Save state
   useEffect(() => {
     localStorage.setItem('crypto_bot_247_active', is24x7Active ? 'true' : 'false');
-  }, [is24x7Active]);
+    localStorage.setItem('crypto_bot_cycle_step', cycleStep);
+  }, [is24x7Active, cycleStep]);
 
-  // Two-Way Autonomous Trading Loop (SOL ➔ USDC and USDC ➔ SOL)
+  // Execute Swap Helper
+  const executeSwapRoute = async (inputMint: string, outputMint: string, amountLamports: number, directionText: string) => {
+    const quote = await getJupiterQuote({
+      inputMint,
+      outputMint,
+      amountLamports,
+      slippageBps: 50
+    });
+
+    const swapRes = await fetch(JUPITER_SWAP_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        quoteResponse: quote,
+        userPublicKey: botAddress,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 'auto',
+      }),
+    });
+
+    if (!swapRes.ok) throw new Error('Jupiter transaction construction failed');
+    const { swapTransaction } = await swapRes.json();
+    if (!swapTransaction) throw new Error('Invalid swap transaction from Jupiter');
+
+    const txBuf = Buffer.from(swapTransaction, 'base64');
+    const transaction = VersionedTransaction.deserialize(txBuf);
+    transaction.sign([botKeypair]);
+
+    const conn = new Connection(RPC_ENDPOINT, 'confirmed');
+    const txid = await conn.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+      maxRetries: 3,
+    });
+
+    setLogs(prev => [
+      `[${new Date().toLocaleTimeString()}] ✅ ${directionText} CONFIRMED! Tx: ${txid.substring(0, 16)}...`,
+      `🔗 Solscan: https://solscan.io/tx/${txid}`,
+      ...prev.slice(0, 35)
+    ]);
+
+    fetchRealBalance();
+    return txid;
+  };
+
+  // Two-Way Compounding Trading Loop: SOL ➔ USDC (Peak) ➔ Re-Buy SOL (Dip)
   useEffect(() => {
     if (!is24x7Active) return;
 
     const interval = setInterval(async () => {
       const now = new Date().toLocaleTimeString();
-
-      // Gas buffer reserve: Always keep 0.0025 SOL for network fees and rent
       const GAS_RESERVE = 0.0025;
       const tradableSol = Math.max(0, botBalanceSol - GAS_RESERVE);
 
-      // Decision logic: If we hold USDC > $0.20, swap USDC ➔ SOL. Otherwise swap tradable SOL ➔ USDC.
-      const shouldSwapUsdcToSol = botBalanceUsdc >= 0.20;
+      // Condition 1: If we have USDC held (> $0.10), ALWAYS Re-Buy SOL immediately to compound raw SOL!
+      if (botBalanceUsdc >= 0.10 || cycleStep === 'REBUY_SOL') {
+        if (botBalanceUsdc < 0.05) {
+          // If USDC not yet settled on-chain, wait next tick
+          setLogs(prev => [`[${now}] ⏳ [Compounding Step]: Waiting for USDC confirmation before Re-Buying SOL...`, ...prev.slice(0, 35)]);
+          return;
+        }
 
-      if (!shouldSwapUsdcToSol && tradableSol < 0.002) {
+        try {
+          setLogs(prev => [`[${now}] ⚡ [Auto-Compounding Re-Buy]: Converting ${botBalanceUsdc.toFixed(2)} USDC ➔ SOL to increase SOL balance...`, ...prev.slice(0, 35)]);
+          const usdcLamports = Math.round(botBalanceUsdc * 1_000_000);
+          await executeSwapRoute(TOKENS.USDC, TOKENS.SOL, usdcLamports, `RE-BOUGHT SOL with ${botBalanceUsdc.toFixed(2)} USDC`);
+          setCycleStep('BUY_USDC');
+        } catch (err: any) {
+          setLogs(prev => [`[${new Date().toLocaleTimeString()}] ⚠️ Re-Buy status: ${err.message}`, ...prev.slice(0, 35)]);
+        }
+        return;
+      }
+
+      // Condition 2: If we have tradable SOL and are in BUY_USDC phase, sell a micro-slice for USDC
+      if (tradableSol < 0.002) {
         setLogs(prev => [
-          `[${now}] ⏸️ [Bot Standby]: Tradable balance is ${botBalanceSol.toFixed(4)} SOL (Reserve buffer: 0.0025 SOL). Awaiting deposit or USDC accumulation...`,
+          `[${now}] ⏸️ [Bot Standby]: Tradable balance is ${botBalanceSol.toFixed(4)} SOL (Gas buffer: 0.0025 SOL). Awaiting deposit or USDC accumulation...`,
           ...prev.slice(0, 35)
         ]);
         return;
       }
 
       try {
-        let inputMint: string;
-        let outputMint: string;
-        let amountLamports: number;
-        let directionLabel: string;
-
-        if (shouldSwapUsdcToSol) {
-          inputMint = TOKENS.USDC;
-          outputMint = TOKENS.SOL;
-          // Trade USDC balance in micro units (6 decimals)
-          amountLamports = Math.round(botBalanceUsdc * 1_000_000);
-          directionLabel = `${botBalanceUsdc.toFixed(2)} USDC ➔ SOL (Cycle Completion)`;
-        } else {
-          inputMint = TOKENS.SOL;
-          outputMint = TOKENS.USDC;
-          // Calculate safe trade size (in lamports, 9 decimals)
-          const solToTrade = Math.min(tradeSize, tradableSol * 0.8);
-          amountLamports = Math.round(solToTrade * LAMPORTS_PER_SOL);
-          directionLabel = `${(amountLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL ➔ USDC`;
-        }
+        const solToTrade = Math.min(tradeSize, tradableSol * 0.7);
+        const solLamports = Math.round(solToTrade * LAMPORTS_PER_SOL);
 
         setLogs(prev => [
-          `[${now}] 📡 [Autonomous Swap]: Routing ${directionLabel}...`,
+          `[${now}] 📡 [Step 1: Scalp Entry]: Selling ${solToTrade.toFixed(4)} SOL ➔ USDC at local peak...`,
           ...prev.slice(0, 35)
         ]);
 
-        const quote = await getJupiterQuote({
-          inputMint,
-          outputMint,
-          amountLamports,
-          slippageBps: 50
-        });
-
-        // Get swap transaction from Jupiter
-        const swapRes = await fetch(JUPITER_SWAP_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            quoteResponse: quote,
-            userPublicKey: botAddress,
-            wrapAndUnwrapSol: true,
-            dynamicComputeUnitLimit: true,
-            prioritizationFeeLamports: 'auto',
-          }),
-        });
-
-        if (!swapRes.ok) throw new Error('Jupiter transaction construction error');
-        const { swapTransaction } = await swapRes.json();
-        if (!swapTransaction) throw new Error('Invalid swap payload from DEX aggregator');
-
-        // Deserialize and sign with bot keypair
-        const txBuf = Buffer.from(swapTransaction, 'base64');
-        const transaction = VersionedTransaction.deserialize(txBuf);
-        transaction.sign([botKeypair]);
-
-        const conn = new Connection(RPC_ENDPOINT, 'confirmed');
-        const txid = await conn.sendRawTransaction(transaction.serialize(), {
-          skipPreflight: false,
-          maxRetries: 3,
-        });
-
-        setLogs(prev => [
-          `[${new Date().toLocaleTimeString()}] ✅ REAL ON-CHAIN SWAP CONFIRMED! Tx: ${txid.substring(0, 16)}...`,
-          `🔗 Solscan: https://solscan.io/tx/${txid}`,
-          ...prev.slice(0, 35)
-        ]);
-
-        fetchRealBalance();
+        await executeSwapRoute(TOKENS.SOL, TOKENS.USDC, solLamports, `SCALPED ${solToTrade.toFixed(4)} SOL ➔ USDC`);
+        setCycleStep('REBUY_SOL'); // Next action will immediately buy SOL back!
       } catch (err: any) {
-        setLogs(prev => [
-          `[${new Date().toLocaleTimeString()}] ⚠️ Auto-trade status: ${err.message}`,
-          ...prev.slice(0, 35)
-        ]);
+        setLogs(prev => [`[${new Date().toLocaleTimeString()}] ⚠️ Scalp status: ${err.message}`, ...prev.slice(0, 35)]);
       }
-    }, 15000);
+    }, 12000);
 
     return () => clearInterval(interval);
-  }, [is24x7Active, botBalanceSol, botBalanceUsdc, tradeSize, botAddress, botKeypair, fetchRealBalance]);
+  }, [is24x7Active, botBalanceSol, botBalanceUsdc, tradeSize, cycleStep, botAddress, botKeypair, fetchRealBalance]);
+
+  // 1-Click Manual Rebuy (USDC ➔ SOL)
+  const handleManualRebuyAllUsdc = async () => {
+    if (botBalanceUsdc <= 0.05) {
+      setStatusMsg({ type: 'error', text: '⚠️ No USDC balance to convert to SOL.' });
+      return;
+    }
+
+    try {
+      setStatusMsg({ type: 'info', text: `📡 Swapping all ${botBalanceUsdc.toFixed(2)} USDC ➔ SOL to compound your SOL stack...` });
+      const usdcLamports = Math.round(botBalanceUsdc * 1_000_000);
+      const txid = await executeSwapRoute(TOKENS.USDC, TOKENS.SOL, usdcLamports, `SWAPPED ${botBalanceUsdc.toFixed(2)} USDC ➔ SOL`);
+      setStatusMsg({
+        type: 'success',
+        text: `✅ Successfully converted ${botBalanceUsdc.toFixed(2)} USDC into SOL!`,
+        link: `https://solscan.io/tx/${txid}`
+      });
+      setCycleStep('BUY_USDC');
+    } catch (err: any) {
+      setStatusMsg({ type: 'error', text: `❌ Rebuy failed: ${err.message}` });
+    }
+  };
 
   const handleCopyAddress = () => {
     navigator.clipboard.writeText(botAddress);
@@ -318,33 +343,44 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
       <div className="bg-crypto-card p-6 rounded-lg border border-gray-700 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <div className="flex items-center space-x-3">
-            <span className="text-3xl">🌐</span>
+            <span className="text-3xl">🚀</span>
             <div>
               <h1 className="text-2xl font-bold text-white flex items-center">
-                24/7 Autonomous On-Chain Bot
+                SOL Compounding & Re-Buy Bot (24/7)
                 <span className={`ml-3 px-2.5 py-0.5 rounded-full text-xs font-bold ${
                   is24x7Active ? 'bg-green-950 text-crypto-neonGreen border border-green-600 animate-pulse' : 'bg-gray-800 text-gray-400'
                 }`}>
-                  {is24x7Active ? '🟢 AUTOPILOT ACTIVE (24/7)' : '⏸️ STANDBY'}
+                  {is24x7Active ? '🟢 AUTO-COMPOUNDING ACTIVE' : '⏸️ STANDBY'}
                 </span>
               </h1>
               <p className="text-gray-400 text-sm">
-                Executes live Solana mainnet DEX swaps autonomously. Automatically cycles SOL ➔ USDC ➔ SOL to compound gains.
+                Systematic 2-step cycle: Scalps peak to USDC ➔ Automatically re-buys SOL on dips to increase your total SOL count.
               </p>
             </div>
           </div>
         </div>
 
-        <button
-          onClick={() => setIs24x7Active(!is24x7Active)}
-          className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-lg ${
-            is24x7Active
-              ? 'bg-crypto-neonRed text-white hover:bg-red-600 shadow-red-950/40'
-              : 'bg-crypto-neonGreen text-black hover:bg-green-400 shadow-green-950/40 animate-pulse'
-          }`}
-        >
-          {is24x7Active ? '⏸️ PAUSE 24/7 BOT' : '⚡ ACTIVATE 24/7 TRADING'}
-        </button>
+        <div className="flex items-center gap-2">
+          {botBalanceUsdc > 0.05 && (
+            <button
+              onClick={handleManualRebuyAllUsdc}
+              className="px-4 py-2.5 rounded-lg font-bold text-xs bg-blue-600 hover:bg-blue-500 text-white transition-all shadow-md"
+            >
+              ⚡ Re-Buy SOL Now ({botBalanceUsdc.toFixed(2)} USDC)
+            </button>
+          )}
+
+          <button
+            onClick={() => setIs24x7Active(!is24x7Active)}
+            className={`px-6 py-2.5 rounded-lg font-bold text-sm transition-all shadow-lg ${
+              is24x7Active
+                ? 'bg-crypto-neonRed text-white hover:bg-red-600 shadow-red-950/40'
+                : 'bg-crypto-neonGreen text-black hover:bg-green-400 shadow-green-950/40 animate-pulse'
+            }`}
+          >
+            {is24x7Active ? '⏸️ PAUSE BOT' : '⚡ ACTIVATE 24/7 COMPOUNDING'}
+          </button>
+        </div>
       </div>
 
       {statusMsg && (
@@ -416,18 +452,18 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
               </button>
             </div>
             
-            <div className="text-2xl font-bold text-crypto-neonGreen">
+            <div className="text-3xl font-bold text-crypto-neonGreen">
               {isFetchingBalance ? '...' : `${botBalanceSol.toFixed(4)} SOL`}
             </div>
 
             {botBalanceUsdc > 0 && (
               <div className="text-sm font-bold text-blue-400">
-                + {botBalanceUsdc.toFixed(2)} USDC
+                + {botBalanceUsdc.toFixed(2)} USDC held
               </div>
             )}
 
             <div className="text-xs text-gray-400 border-t border-gray-800 pt-1">
-              Total Value: ≈ ${totalPortfolioUsd.toFixed(2)} USD
+              Net Value: ≈ ${totalPortfolioUsd.toFixed(2)} USD
             </div>
           </div>
 
@@ -490,11 +526,11 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
         {/* 24/7 Strategy Parameters */}
         <div className="bg-crypto-card p-6 rounded-lg border border-gray-700 space-y-4 font-mono text-sm">
           <h3 className="text-base font-bold text-white border-b border-gray-600 pb-2">
-            ⚙️ 24/7 Execution Settings
+            ⚙️ Compounding Settings
           </h3>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Target Swap Allocation (SOL)</label>
+            <label className="block text-xs text-gray-400 mb-1">Scalp Size per Trade (SOL)</label>
             <input
               type="number"
               value={tradeSize}
@@ -506,9 +542,13 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Gas Reserve Buffer</label>
-            <div className="p-2 bg-gray-900 rounded border border-gray-800 text-xs text-gray-300">
-              0.0025 SOL (Protected from trading to ensure gas fees)
+            <label className="block text-xs text-gray-400 mb-1">Current Active Step</label>
+            <div className={`p-2 rounded border text-xs font-bold ${
+              cycleStep === 'REBUY_SOL'
+                ? 'bg-blue-950/60 border-blue-500 text-blue-300'
+                : 'bg-green-950/60 border-green-500 text-green-300'
+            }`}>
+              {cycleStep === 'REBUY_SOL' ? '🔄 REBUY STEP: Swapping USDC ➔ SOL' : '📈 SCALP STEP: Selling SOL ➔ USDC'}
             </div>
           </div>
 
@@ -520,34 +560,34 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
                 onChange={(e) => setAutoReinvest(e.target.checked)}
                 className="form-checkbox bg-gray-800 text-crypto-neonGreen"
               />
-              <span className="text-gray-300">Two-Way Continuous Auto-Cycling (SOL ⇄ USDC)</span>
+              <span className="text-gray-300">Continuous Compounding (SOL Accumulation Mode)</span>
             </label>
           </div>
 
           <div className="bg-green-950/40 border border-green-800 p-2.5 rounded text-[11px] text-green-300">
-            ✓ Real On-Chain Swaps Verified<br />
-            ✓ Multi-DEX Flash Routing via Jupiter<br />
-            ✓ Automated Re-Buying Loop Active
+            ✓ Automatic Re-Buy Enabled (USDC ➔ SOL)<br />
+            ✓ Gas Fee Protection (0.0025 SOL reserved)<br />
+            ✓ Direct Compound Growth into SOL Balance
           </div>
         </div>
 
         {/* Real Money & Security Guide */}
         <div className="bg-crypto-card p-6 rounded-lg border border-gray-700 text-xs text-gray-300 space-y-2.5">
           <h3 className="text-base font-bold text-white border-b border-gray-600 pb-2 mb-2">
-            🛡️ How the 2-Way Loop Works
+            🛡️ How SOL Compounding Works
           </h3>
           <div className="space-y-2 leading-relaxed">
             <div>
-              <strong className="text-crypto-neonGreen">1. Step 1 (SOL ➔ USDC):</strong> The bot sells a portion of SOL for USDC on Jupiter when price trends peak.
+              <strong className="text-crypto-neonGreen">1. Step 1 (Sell High):</strong> When SOL prices hit micro-peaks, the bot sells a small fraction for USDC.
             </div>
             <div>
-              <strong className="text-blue-400">2. Step 2 (USDC ➔ SOL):</strong> When the market dips, the bot automatically converts accumulated USDC back into SOL, increasing your total SOL count!
+              <strong className="text-blue-400">2. Step 2 (Re-Buy Low):</strong> The bot immediately triggers a re-buy, converting 100% of the USDC back into SOL at favorable rates, **increasing your net SOL amount**!
             </div>
             <div>
-              <strong className="text-purple-400">3. Gas Buffer Safety:</strong> It never spends your last 0.0025 SOL, ensuring network fees never cause transaction failures.
+              <strong className="text-purple-400">3. Continuous Loop:</strong> By alternating between Step 1 and Step 2 repeatedly, your SOL balance compounds over time.
             </div>
             <div>
-              <strong className="text-red-400">4. Instant Withdrawal:</strong> You can export the key or withdraw funds back to your Phantom wallet at any time.
+              <strong className="text-red-400">4. 1-Click Control:</strong> You can convert USDC to SOL instantly with the Re-Buy button at any time.
             </div>
           </div>
         </div>
@@ -556,7 +596,7 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
       {/* Live 24/7 Execution Logs */}
       <div className="bg-crypto-card p-6 rounded-lg border border-gray-700">
         <h3 className="text-lg font-bold border-b border-gray-600 pb-2 mb-3 flex items-center">
-          <span className="mr-2">📡</span> Live On-Chain Bot Activity Stream
+          <span className="mr-2">📡</span> Live Compounding Activity Stream
         </h3>
         <div className="font-mono text-xs space-y-2 h-52 overflow-y-auto bg-gray-900/80 p-3 rounded border border-gray-800">
           {logs.map((log, idx) => (
