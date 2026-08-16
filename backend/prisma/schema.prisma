@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String       @id @default(uuid())
+  walletAddress String       @unique
+  createdAt     DateTime     @default(now())
+  trades        Trade[]
+  sessions      BotSession[]
+}
+
+model Trade {
+  id          String   @id @default(uuid())
+  userId      String
+  timestamp   DateTime @default(now())
+  pair        String
+  side        String
+  amount      Float
+  price       Float
+  profit      Float
+  status      String
+  engine      String
+  txSignature String?
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model BotSession {
+  id          String    @id @default(uuid())
+  userId      String
+  startedAt   DateTime  @default(now())
+  stoppedAt   DateTime?
+  goalUsd     Float
+  totalPnl    Float     @default(0)
+  tradesCount Int       @default(0)
+  status      String    @default("ACTIVE")
+  user        User      @relation(fields: [userId], references: [id])
+}
+
+model PriceSnapshot {
+  id        String   @id @default(uuid())
+  token     String
+  price     Float
+  source    String
+  timestamp DateTime @default(now())
+}
