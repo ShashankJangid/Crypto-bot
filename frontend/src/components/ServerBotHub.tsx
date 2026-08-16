@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { Keypair, Connection, LAMPORTS_PER_SOL, Transaction, SystemProgram, sendAndConfirmTransaction, VersionedTransaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 import { TOKENS, getJupiterQuote } from '../services/jupiterSwap';
 
 interface ServerBotHubProps {
@@ -28,12 +29,16 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
   });
 
   const botAddress = botKeypair.publicKey.toBase58();
+  const botBase58Key = bs58.encode(botKeypair.secretKey);
+
   const [botBalance, setBotBalance] = useState<number>(0);
   const [isFetchingBalance, setIsFetchingBalance] = useState<boolean>(true);
   const [is24x7Active, setIs24x7Active] = useState<boolean>(() => localStorage.getItem('crypto_bot_247_active') === 'true');
   const [autoReinvest, setAutoReinvest] = useState(true);
   const [tradeSize, setTradeSize] = useState(0.01);
-  const [copied, setCopied] = useState(false);
+  const [copiedAddress, setCopiedAddress] = useState(false);
+  const [copiedBase58, setCopiedBase58] = useState(false);
+  const [copiedJson, setCopiedJson] = useState(false);
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [importKeyInput, setImportKeyInput] = useState('');
   const [showImportModal, setShowImportModal] = useState(false);
@@ -162,10 +167,22 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
     return () => clearInterval(interval);
   }, [is24x7Active, botBalance, tradeSize, botAddress, botKeypair, fetchRealBalance]);
 
-  const handleCopy = () => {
+  const handleCopyAddress = () => {
     navigator.clipboard.writeText(botAddress);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopiedAddress(true);
+    setTimeout(() => setCopiedAddress(false), 2000);
+  };
+
+  const handleCopyBase58 = () => {
+    navigator.clipboard.writeText(botBase58Key);
+    setCopiedBase58(true);
+    setTimeout(() => setCopiedBase58(false), 2000);
+  };
+
+  const handleCopyJson = () => {
+    navigator.clipboard.writeText(JSON.stringify(Array.from(botKeypair.secretKey)));
+    setCopiedJson(true);
+    setTimeout(() => setCopiedJson(false), 2000);
   };
 
   const handleImportKeypair = () => {
@@ -175,7 +192,8 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
       if (trimmed.startsWith('[')) {
         secret = Uint8Array.from(JSON.parse(trimmed));
       } else {
-        throw new Error('Please provide secret key as JSON array format [12, 34, ...]');
+        // Assume Base58 string
+        secret = bs58.decode(trimmed);
       }
 
       const importedKp = Keypair.fromSecretKey(secret);
@@ -185,11 +203,11 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
       setImportKeyInput('');
       setStatusMsg({
         type: 'success',
-        text: `✅ Imported bot wallet: ${importedKp.publicKey.toBase58()}`
+        text: `✅ Successfully imported wallet: ${importedKp.publicKey.toBase58()}`
       });
       fetchRealBalance();
     } catch (e: any) {
-      setStatusMsg({ type: 'error', text: `❌ Import failed: ${e.message}` });
+      setStatusMsg({ type: 'error', text: `❌ Import failed: Invalid key format. ${e.message}` });
     }
   };
 
@@ -309,7 +327,7 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
                 href={`https://solscan.io/account/${botAddress}`}
                 target="_blank"
                 rel="noreferrer"
-                className="text-[11px] text-crypto-neonGreen hover:underline font-mono"
+                className="text-[11px] text-crypto-neonGreen hover:underline font-mono font-bold"
               >
                 Solscan ↗
               </a>
@@ -322,10 +340,11 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
                 className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-gray-300 font-mono"
               />
               <button
-                onClick={handleCopy}
+                onClick={handleCopyAddress}
                 className="bg-gray-800 hover:bg-gray-700 px-3 py-2 rounded text-xs text-white font-mono"
+                title="Copy Address"
               >
-                {copied ? '✅' : '📋'}
+                {copiedAddress ? '✅' : '📋'}
               </button>
             </div>
           </div>
@@ -361,10 +380,42 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
               {showPrivateKey ? '🙈 Hide Private Key' : '👁️ Reveal Bot Private Key'}
             </button>
 
+            {/* Revealed Private Key Box */}
             {showPrivateKey && (
-              <div className="p-2.5 bg-red-950/40 border border-red-900 rounded text-[10px] font-mono text-red-300 break-all">
-                <strong>Secret Key (JSON format):</strong><br />
-                {JSON.stringify(Array.from(botKeypair.secretKey))}
+              <div className="p-3 bg-red-950/50 border border-red-800 rounded text-xs font-mono space-y-3">
+                <div>
+                  <div className="flex justify-between items-center text-[10px] text-gray-400 mb-1">
+                    <span>Base58 Private Key (Phantom Format):</span>
+                    <button onClick={handleCopyBase58} className="text-crypto-neonGreen hover:underline font-bold">
+                      {copiedBase58 ? '✅ Copied' : '📋 Copy Base58'}
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    readOnly
+                    value={botBase58Key}
+                    className="w-full bg-gray-900 border border-gray-700 rounded p-1.5 text-[10px] text-white font-mono select-all"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center text-[10px] text-gray-400 mb-1">
+                    <span>Byte Array Format:</span>
+                    <button onClick={handleCopyJson} className="text-crypto-neonGreen hover:underline font-bold">
+                      {copiedJson ? '✅ Copied' : '📋 Copy JSON'}
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    readOnly
+                    value={JSON.stringify(Array.from(botKeypair.secretKey))}
+                    className="w-full bg-gray-900 border border-gray-700 rounded p-1.5 text-[9px] text-gray-300 font-mono select-all"
+                  />
+                </div>
+
+                <div className="text-[10px] text-yellow-400 leading-relaxed">
+                  ⚠️ <strong>How to Import into Phantom:</strong> Open Phantom ➔ Settings ➔ Manage Accounts ➔ Add/Connect Wallet ➔ <strong>Import Private Key</strong> ➔ Paste the Base58 string above.
+                </div>
               </div>
             )}
           </div>
@@ -452,13 +503,13 @@ export const ServerBotHub: React.FC<ServerBotHubProps> = ({ solPrice = 75.30 }) 
           <div className="bg-crypto-card border border-gray-700 p-6 rounded-lg max-w-md w-full space-y-4 font-mono">
             <h3 className="text-lg font-bold text-white">Import Existing Bot Private Key</h3>
             <p className="text-xs text-gray-400">
-              Paste the secret key as a JSON array (e.g. [12,34,56...]).
+              Paste your Base58 string (from Phantom) or JSON byte array `[12, 34...]`.
             </p>
             <textarea
               rows={4}
               value={importKeyInput}
               onChange={(e) => setImportKeyInput(e.target.value)}
-              placeholder="[12, 34, 56, 78, ...]"
+              placeholder="Base58 private key string or [12, 34, 56, 78, ...]"
               className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-white font-mono"
             />
             <div className="flex justify-end gap-2">
