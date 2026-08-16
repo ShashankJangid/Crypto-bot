@@ -4,6 +4,7 @@ import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
 import { Dashboard } from './components/Dashboard';
 import { AiTraderPage } from './components/AiTraderPage';
+import { MicroCompoundingPage } from './components/MicroCompoundingPage';
 import { ArbitragePage } from './components/ArbitragePage';
 import { SwingTradePage } from './components/SwingTradePage';
 import { SettingsPage } from './components/SettingsPage';
@@ -13,7 +14,7 @@ import { BotStatus, TradeRecord, BotSettings } from './types';
 import { config } from './config';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('ai_trader');
+  const [activeTab, setActiveTab] = useState('micro_compound');
   const { prices, loading: pricesLoading } = usePrices();
 
   const [botSettings, setBotSettings] = useState<BotSettings>(() => {
@@ -27,7 +28,7 @@ function App() {
       arbThreshold: 0.8,
       profitTarget: 50,
       stopLoss: 3,
-      goalUsd: 1000,
+      goalUsd: 1000000,
       maxTradeSize: 5
     };
   });
@@ -91,7 +92,7 @@ function App() {
 
       setBotStatus(prev => {
         const nextPnl = +(prev.currentPnl + profitUsd).toFixed(2);
-        const goal = botSettings.goalUsd || 1000;
+        const goal = botSettings.goalUsd || 1000000;
         const progress = Math.min(+((nextPnl / goal) * 100).toFixed(1), 100);
         return {
           ...prev,
@@ -119,7 +120,7 @@ function App() {
     setTrades(prev => [trade, ...prev]);
     setBotStatus(prev => {
       const nextPnl = +(prev.currentPnl + trade.profit).toFixed(2);
-      const goal = botSettings.goalUsd || 1000;
+      const goal = botSettings.goalUsd || 1000000;
       return {
         ...prev,
         tradesExecuted: prev.tradesExecuted + 1,
@@ -131,6 +132,8 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'micro_compound':
+        return <MicroCompoundingPage prices={prices} onExecuteTrade={handleExecuteTrade} />;
       case 'ai_trader':
         return <AiTraderPage prices={prices} onExecuteTrade={handleExecuteTrade} />;
       case 'dashboard':
@@ -175,8 +178,9 @@ function App() {
                   <span className="mr-2">⚡</span> ArbBot AI
                 </div>
                 
-                <nav className="space-y-2">
+                <nav className="space-y-1.5">
                   {[
+                    { id: 'micro_compound', label: '🚀 Micro ➔ $1M' },
                     { id: 'ai_trader', label: '🤖 AI Auto-Pilot' },
                     { id: 'dashboard', label: '📊 Dashboard' },
                     { id: 'arbitrage', label: '⚡ Arbitrage' },
@@ -201,10 +205,10 @@ function App() {
 
               <div className="pt-4 border-t border-gray-700 space-y-2 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">AI Intelligence:</span>
+                  <span className="text-gray-400">Compounding:</span>
                   <span className="flex items-center text-crypto-neonGreen font-bold">
                     <span className="w-2 h-2 rounded-full bg-crypto-neonGreen animate-pulse mr-1"></span>
-                    Neural v3.4
+                    Geometric v2
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
